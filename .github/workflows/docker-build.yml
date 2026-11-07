@@ -5,17 +5,25 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Тег образа в GHCR (например: latest, 2.2.6, test)"
+        description: "Тег образа (например: latest, test)"
         required: false
         default: latest
       platforms:
-        description: "Платформы через запятую (linux/amd64 или linux/amd64,linux/arm64)"
+        description: "Платформы: linux/amd64 (для артефакта — ровно одна)"
         required: false
         default: linux/amd64
       push:
-        description: "Публиковать образ в GHCR (снимите галочку, чтобы только собрать)"
+        description: "Публиковать образ в GHCR (нужен логин для скачивания)"
+        type: boolean
+        default: false
+      artifact:
+        description: "Выгрузить образ артефактом (docker save, качается вручную)"
         type: boolean
         default: true
+      retention:
+        description: "Сколько дней хранить артефакт"
+        required: false
+        default: "7"
 
 concurrency:
   group: docker-build-${{ github.ref }}
@@ -34,6 +42,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Validate inputs
+        run: |
+          if [ "${{ inputs.push }}" != "true" ] && [ "${{ inputs.artifact }}" != "true" ]; then
+            echo "::error::Включите хотя бы одно: push (GHCR) или artifact (скачивание образа)."
+            exit 1
+          fi
+          if [ "${{ inputs.artifact }}" = "true" ] && [[ "${{ inputs.platforms }}" == *,* ]]; then
+            echo "::error::Артефакт поддерживает только одну платформу. Оставьте одну в platforms."
+            exit 1
+          fi
 
       - name: Set up QEMU (только для мультиарх-сборки)
         if: contains(inputs.platforms, ',')
@@ -59,25 +78,54 @@ jobs:
             type=raw,value=${{ inputs.tag }}
             type=sha,format=long
 
-      - name: Build and push
+      - name: Build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           platforms: ${{ inputs.platforms }}
           push: ${{ inputs.push }}
+          load: ${{ inputs.artifact }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Export image (docker save)
+        if: inputs.artifact
+        run: |
+          IMAGE="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)"
+          echo "Saving $IMAGE"
+          docker save "$IMAGE" | gzip -6 > opencode-image.tar.gz
+          ls -lh opencode-image.tar.gz
+
+      - name: Upload image artifact
+        if: inputs.artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-image-${{ github.run_number }}
+          path: opencode-image.tar.gz
+          retention-days: ${{ inputs.retention }}
+          compression-level: 0
+
       - name: Summary
-        if: inputs.push
         run: |
           {
             echo "## Образ собран"
-            echo '```'
-            echo "docker pull ${{ env.REGISTRY }}/${{ github.repository }}:${{ inputs.tag }}"
-            echo '```'
-            echo "Платформы: \`${{ inputs.platforms }}\`"
+            if [ "${{ inputs.push }}" = "true" ]; then
+              echo ""
+              echo "### GHCR"
+              echo '```'
+              echo "docker pull ${{ env.REGISTRY }}/${{ github.repository }}:${{ inputs.tag }}"
+              echo '```'
+            fi
+            if [ "${{ inputs.artifact }}" = "true" ]; then
+              echo ""
+              echo "### Артефакт"
+              echo "Скачайте **opencode-image-${{ github.run_number }}** внизу страницы запуска, распакуйте zip и выполните:"
+              echo '```'
+              echo "docker load -i opencode-image.tar.gz"
+              echo "docker tag $(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1) opencode:${{ inputs.tag }}"
+              echo '```'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
