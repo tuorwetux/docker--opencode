@@ -8,6 +8,14 @@ on:
         description: "Тег образа (например: latest, test)"
         required: false
         default: latest
+      opencode_version:
+        description: "Версия @opencode/cli (например 2.2.6)"
+        required: false
+        default: "2.2.6"
+      baseline:
+        description: "Baseline-бинарник без AVX2 (нужен для старых CPU)"
+        type: boolean
+        default: true
       platforms:
         description: "Платформы: linux/amd64 (для артефакта — ровно одна)"
         required: false
@@ -84,6 +92,9 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: ${{ inputs.platforms }}
+          build-args: |
+            OPENCODE_VERSION=${{ inputs.opencode_version }}
+            OPENCODE_BASELINE=${{ inputs.baseline }}
           push: ${{ inputs.push }}
           load: ${{ inputs.artifact }}
           tags: ${{ steps.meta.outputs.tags }}
